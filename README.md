@@ -1,2 +1,2 @@
 # cadence
-Computational Approach to Degradation Engineering for Controlled Expiration
+Computational Architecture for Degradation Engineering with Controlled Expiration
