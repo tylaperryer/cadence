@@ -1,0 +1,145 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import brentq
+
+# ==============================================================================
+# 1. DEFINE THE CORE BIODEGRADATION FORMULAS (REFINED)
+# ==============================================================================
+# We now include multiple options for the environmental model to address the critique.
+
+def calculate_E(t, params, model_type='logarithmic'):
+    """
+    Calculates the Environmental acceleration factor E(t).
+    Now supports multiple models for comparison.
+    """
+    epsilon = params['epsilon']
+    t0 = params['t0']
+
+    if model_type == 'logarithmic':
+        # Original model: Represents effects that saturate over time.
+        return 1 + epsilon * np.log(1 + t / t0)
+    elif model_type == 'linear':
+        # Alternative model: Represents a constant, steady environmental impact.
+        return 1 + (epsilon / t0) * t
+    elif model_type == 'power_law':
+        # Alternative model: Represents accelerating or decelerating impact.
+        return 1 + (t / t0)**epsilon
+    else: # No environmental effect
+        return np.ones_like(t)
+
+def calculate_Mw(t, params, env_model_type='logarithmic'):
+    """
+    Calculates the final Molecular Weight Mw(t).
+    This core function now accepts the environmental model type as an argument.
+    """
+    # Unpack parameters
+    Mw0, fc, k_base, env_factor, s, ts, gamma, alpha, beta, Mb = (
+        params['Mw0'], params['fc'], params['k_base'], params['env_factor'],
+        params['s'], params['ts'], params['gamma'], params['alpha'], params['beta'], params['Mb']
+    )
+
+    # Calculate intermediate values
+    E_t = calculate_E(t, params, model_type=env_model_type)
+    k_t = k_base * env_factor * E_t
+
+    # The time-dependent sigmoid S(t) is a proxy for byproduct concentration
+    S_t = 1 / (1 + np.exp(-s * (t - ts)))
+
+    P_t = fc * (1 - np.exp(-k_t * t))
+    P_eff_t = np.minimum(P_t * (1 + gamma * S_t * P_t), 0.99)
+    Nb_t = alpha * P_eff_t * (Mw0 / Mb)
+    Mw_t = Mw0 * np.exp(-beta * Nb_t)
+
+    return Mw_t
+
+# ==============================================================================
+# 2. SET THE BASELINE SIMULATION PARAMETERS
+# ==============================================================================
+# These parameters are for our primary case study.
+baseline_params = {
+    'Mw0': 100000, 'fc': 0.8, 'k_base': 0.001, 'Mb': 10000,
+    'env_factor': 3.0, 'epsilon': 0.05, 't0': 30,
+    'gamma': 50.0, 's': 0.1, 'ts': 80,
+    'alpha': 1.0, 'beta': 2.0,
+}
+
+# Define the functional failure threshold (e.g., 95% MW loss)
+theta_loss = 0.95
+threshold_Mw = baseline_params['Mw0'] * (1 - theta_loss)
+
+# Time array for simulation
+t_values = np.linspace(0, 300, 1000) # Reduced time to focus on the action
+
+# ==============================================================================
+# 3. SETUP AND CREATE THE MULTI-PANEL PLOT
+# ==============================================================================
+# This creates a 1x3 grid of subplots for a comprehensive figure.
+plt.style.use('seaborn-v0_8-whitegrid')
+fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), constrained_layout=True)
+fig.suptitle('CADENCE: Simulation', fontsize=20, fontweight='bold')
+
+# --- Panel A: Baseline Model Demonstration ---
+ax1 = axes[0]
+Mw_baseline = calculate_Mw(t_values, baseline_params)
+ax1.plot(t_values, Mw_baseline, lw=2.5, color='#00529B', label='Baseline Degradation')
+ax1.axhline(y=threshold_Mw, color='#D41159', linestyle='--', lw=2, label=f'{theta_loss*100:.0f}% MW Loss Threshold')
+
+# Find degradation time for baseline
+def root_func_baseline(t): return calculate_Mw(t, baseline_params) - threshold_Mw
+t_d_baseline = brentq(root_func_baseline, a=0, b=t_values[-1])
+ax1.plot(t_d_baseline, threshold_Mw, 'o', color='#D41159', markersize=8, markeredgecolor='black', label=f'$t_d$ = {t_d_baseline:.1f} days')
+
+ax1.set_title('A) Core Model Demonstration', fontsize=14, fontweight='bold')
+ax1.legend()
+
+# --- Panel B: Sensitivity Analysis ---
+ax2 = axes[1]
+# 1. Baseline (for reference)
+ax2.plot(t_values, Mw_baseline, lw=2.5, color='#00529B', linestyle='--', label='Baseline ($f_c=0.8, env=3$)')
+
+# 2. Lower Cleavable Fraction (worse material)
+params_low_fc = baseline_params.copy(); params_low_fc['fc'] = 0.4
+Mw_low_fc = calculate_Mw(t_values, params_low_fc)
+ax2.plot(t_values, Mw_low_fc, lw=2.5, color='#FFC20A', label='Low $f_c$ (0.4)')
+
+# 3. Mild Environment (less harsh)
+params_mild_env = baseline_params.copy(); params_mild_env['env_factor'] = 1.0
+Mw_mild_env = calculate_Mw(t_values, params_mild_env)
+ax2.plot(t_values, Mw_mild_env, lw=2.5, color='#009E73', label='Mild Env. (1.0)')
+
+ax2.set_title('B) Sensitivity Analysis', fontsize=14, fontweight='bold')
+ax2.legend()
+
+# --- Panel C: Environmental Model Comparison ---
+ax3 = axes[2]
+# 1. Baseline (Logarithmic)
+ax3.plot(t_values, Mw_baseline, lw=2.5, color='#00529B', label='Logarithmic (Saturating)')
+
+# 2. Linear Environmental Model
+Mw_linear_env = calculate_Mw(t_values, baseline_params, env_model_type='linear')
+ax3.plot(t_values, Mw_linear_env, lw=2.5, color='#785EF0', linestyle='--', label='Linear (Steady)')
+
+# 3. Power-Law Environmental Model
+Mw_power_env = calculate_Mw(t_values, baseline_params, env_model_type='power_law')
+ax3.plot(t_values, Mw_power_env, lw=2.5, color='#DC267F', linestyle=':', label='Power-Law (Accelerating)')
+
+ax3.set_title('C) Environmental Model Comparison', fontsize=14, fontweight='bold')
+ax3.legend()
+
+# --- Final Formatting for All Panels ---
+for ax in axes:
+    ax.set_xlabel('Time (days)', fontsize=12)
+    ax.set_ylabel('Molecular Weight (Da)', fontsize=12)
+    ax.set_xlim(0, t_values[-1])
+    ax.set_ylim(-5000, baseline_params['Mw0'] * 1.05)
+    ax.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+    ax.grid(True)
+
+# ==============================================================================
+# 4. SAVE THE FINAL, COMPREHENSIVE FIGURE
+# ==============================================================================
+output_filename = 'simulation_plot.svg'
+plt.savefig(output_filename, format='svg', bbox_inches='tight')
+
+print(f"\nComprehensive multi-panel plot saved as a high-quality SVG: '{output_filename}'")
+print("This single, powerful figure replaces the previous one in your paper.")
